@@ -106,7 +106,7 @@ yolo detect predict model=runs/train_duo/e2e_aud_exp/weights/best.pt source=path
 
 - Windows 建议将 `--workers` 设为 `0-4` 以提高稳定性
 - 若显存不足，优先降低 `--batch` 或 `--imgsz`
-- `requirements.txt` 包含特定 CUDA/PyTorch 版本，请按你的环境调整
+- `requirements.txt` 包含特定 CUDA/PyTorch 版本
 
 ## License
 
