@@ -1,4 +1,4 @@
-# E2E-AUD (YOLOv13-based)
+# E2E-AUD 
 
 E2E-AUD 是一个基于 Ultralytics 框架的目标检测项目，用于 DUO 等数据集的训练与实验复现。
 
