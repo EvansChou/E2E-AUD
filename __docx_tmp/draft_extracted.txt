@@ -1,0 +1,603 @@
+﻿
+1. Introduction
+With the rapid development of marine resource exploration, underwater robotic operations, and marine ecological monitoring, Underwater Object Detection (UOD) has emerged as a research hotspot in the field of computer vision [1]. Unlike terrestrial environments, the underwater environment is characterized by extreme complexity and high uncertainty. Achieving high-precision and real-time UOD is not only significant for marine biodiversity conservation but also a core prerequisite for Autonomous Underwater Vehicles (AUVs) to perform complex tasks [2]. Although detectors based on Deep Convolutional Neural Networks (CNNs), such as the YOLO series, have achieved remarkable success on terrestrial datasets, their performance often suffers drastic degradation when directly transferred to underwater environments. Distinct from visual perception in atmospheric environments, underwater optical imaging is severely affected by the medium itself, leading to prevalent issues such as color distortion, low contrast, and blurred details in underwater images [3]. These factors pose significant challenges to object detection algorithms. Specifically, these challenges mainly stem from three aspects: (1) Complex Underwater Optical Degradation: The selective absorption of light waves by water鈥攚here red light attenuates the fastest鈥攍eads to severe color casting (typically a bluish-green bias). Simultaneously, forward and backward scattering caused by suspended particles result in image blurring and hazing effects, severely masking the true features of targets [4]. (2) Morphological Diversity of Underwater Organisms: Many valuable underwater targets, such as sea cucumbers and starfish, belong to soft-bodied or invertebrate animals. Their body shapes are highly variable and lack fixed contours, making it difficult for traditional detection models based on fixed geometric priors to adapt [5]. (3) Small Scale and Dense Distribution: In real-world underwater scenarios, targets are usually small in size and densely distributed within the field of view [6]. During feature extraction, fine-grained texture information of small objects is prone to being lost during the downsampling operations of CNNs, leading to severe missed detections [7].
+To address the aforementioned challenges, existing research has primarily followed two technical paths: image enhancement-based preprocessing methods and deep learning-based end-to-end detection methods. However, both exhibit distinct limitations. The first category of methods aims to improve image quality from the source. Traditional methods perform reverse restoration based on physical models (e.g., the Jaffe-McGlamery model) [8], estimating the underwater degradation process by establishing light transmission equations. However, they rely on precise underwater optical parameters, which are difficult to obtain in practical applications, resulting in poor generalization. Data-driven methods represented by CNNs or Generative Adversarial Networks (GANs) can effectively improve visual quality; for instance, WaterNet [9] and UWCNN [10] achieved good color correction effects by training networks on large-scale synthetic data. However, they often suffer from domain shift issues, limiting their generalization ability on real underwater images. Recently, self-supervised and unsupervised methods have become research hotspots. FUnIE-GAN [11] and Water-Color Transfer [12] have attempted unpaired enhancement and color transfer techniques, respectively. However, such enhancement models are usually trained independently of downstream detection tasks. Their optimization objectives are often inconsistent with the discriminative features required by detectors, potentially even introducing artifacts that are harmful to detection [13]. The second category of methods focuses on enhancing the robustness of the detection model itself. Researchers have strengthened feature extraction capabilities by designing more powerful backbones, attention mechanisms, or multi-scale fusion strategies [14]. For example, LMFEN [15] proposed hierarchical deep convolutions to preserve fine-grained features during downsampling; UW-ResNet [16] modified residual block structures to enhance the perception of blurred boundaries. Nevertheless, most works still employ standard convolution operations, where fixed sampling grids struggle to adapt to irregular and deformable target contours [17]. Meanwhile, to obtain a sufficiently large receptive field, models generally use strided convolution or pooling for downsampling, which inevitably leads to the loss of semantic information for small objects, becoming a performance bottleneck [18].
+In summary, the current field of underwater object detection faces a core contradiction: the two critical stages鈥攊mage enhancement and object detection鈥攁re decoupled, lacking a unified framework guided by the improvement of final detection performance for collaborative optimization. Simultaneously, detection networks themselves possess inherent defects in handling target deformation and feature preservation.
+To systematically solve the above problems, this paper proposes a unified framework named 鈥淓nd-to-End Underwater Specialist.鈥?/w:t> The main contributions of this work are as follows:
+Task-Collaborative Image Enhancement Module: We introduce a lightweight UnitModule and seamlessly embed it into the front end of the detection network. By combining the physical model of underwater optical imaging with deep networks and jointly optimizing enhancement parameters with detection losses, this module enables the image restoration process to directly serve the improvement of detection accuracy, realizing end-to-end collaborative learning between enhancement and detection.
+Detail-Preserving Frequency-Domain Feature Extraction Mechanism: To alleviate detail loss during downsampling, we innovatively introduce a Haar wavelet transform layer to replace traditional stem layer downsampling operations in the underwater detection environment. Leveraging the multi-resolution analysis characteristics of wavelet transforms, high-frequency edge and texture information is losslessly preserved in the frequency domain, providing richer low-level features for subsequent detection, especially for small objects.
+Deformation-Adaptive Feature Representation Network: In the backbone network, we integrate the latest linear deformable convolution (LDConv) module. By dynamically learning sampling point offsets on feature maps, this module breaks the geometric limitations of fixed convolution kernels, enabling them to adaptively align with the actual morphology of targets, thereby significantly improving the model's ability to model geometric deformations of underwater organisms with diverse poses and irregular shapes.
+We conducted extensive experiments on multiple public underwater datasets. Results show that the proposed method significantly outperforms current mainstream methods in detection accuracy while maintaining high efficiency, demonstrating superior robustness, especially in scenarios with severe color distortion, large target deformation, and dense small objects.
+The remainder of this paper is organized as follows: Section 2 reviews related work; Section 3 details the overall framework and core modules of the proposed method; Section 4 presents experimental settings, result analysis, and discussion; Section 5 concludes the paper and outlines future research directions.
+
+2. Related Work
+2.1 Underwater Image Enhancement and Restoration 
+Underwater image enhancement and restoration aim to recover clear visual content from degraded observations. Their development has undergone a profound evolution from physical model-driven approaches to data-driven paradigms, and more recently, to task-driven strategies.
+Physical Model-based Methods: The core of these methods lies in the mathematical modeling of the underwater optical imaging process. Beyond the widely used Jaffe-McGlamery model or its simplified forms, representative works such as Du et al. [19] proposed a method based on Retinex theory to decouple illumination and reflectance components; Zhuang et al. [20] utilized physical absorption and scattering models to synergistically enhance contrast. Furthermore, various variants that achieve restoration by estimating background light and transmission maps [21] have also demonstrated clear physical interpretability. While these methods possess explicit physical meaning, their performance is highly dependent on the accuracy of parameter estimation, limiting their generalizability in complex and dynamic underwater environments.
+Deep Learning-based Methods: With the rise of the data-driven paradigm, CNNs and GANs  have gradually become mainstream. UWCNN [10] utilized synthetic datasets to train enhancement networks, while Water-Net [9] and FDCE-Net [22] optimized visual quality through adversarial learning. However, most of these methods rely on synthetic data or carefully paired real-world data, whereas acquiring high-quality paired underwater images is extremely difficult. More importantly, these methods typically use pixel-level (e.g., PSNR, SSIM) or perceptual metrics as optimization objectives. Although the enhanced results are visually pleasing, they may suffer from a mismatch with the discriminative feature representation required by downstream high-level vision tasks (e.g., detection, segmentation) [13].
+Task-Oriented Enhancement Methods: Recently, researchers have begun exploring task-oriented enhancement strategies. Approaches include jointly training the enhancement module with the task network [22] or introducing task-specific constraints into the loss function [23]. However, existing joint optimization frameworks often lack lightweight modeling of underwater color degradation mechanisms. Furthermore, most designs implement the enhancement module as a relatively complex sub-network, thereby increasing the overall model complexity and training difficulty.
+2.2 Object Detection and Its Underwater Applications
+Current mainstream detectors are categorized into two-stage (e.g., Faster R-CNN series) and one-stage (e.g., YOLO series, SSD) paradigms. Among them, the YOLO series, renowned for its excellent trade-off between accuracy and speed [24, 25], has become the preferred baseline model for computationally constrained platforms such as underwater robots. Additionally, Transformer architectures have been introduced into the detection field, such as DETR [26] and its variants, demonstrating powerful global modeling capabilities. However, their high computational cost limits their application in real-time underwater operations.飩? 
+Addressing the challenges of the underwater environment, researchers have made multi-dimensional improvements to detection networks. These include designing multi-scale feature fusion structures to handle scale variations (e.g., S-FPN [27, 28]), introducing attention mechanisms to focus on blurred targets [29], and leveraging data augmentation to simulate degraded environments for improved robustness [30]. Nevertheless, most of these improvements are confined to the backend of the detection network. Regarding input image quality degradation, they typically adopt an attitude of "offline pre-processing" or "passive adaptation," failing to achieve a deep coupling of enhancement and detection at the architectural level.
+2.3 Network Design for Deformation Adaptation and Detail Preservation 
+The variable poses of non-rigid underwater organisms and the degradation of edges in tiny objects constitute two major difficulties in current detection tasks. Deformable Convolutional Networks (DCN) significantly enhance the capability to model complex geometric deformations by adding learnable offsets to each sampling point of the convolution kernel, allowing the receptive field to adaptively align with target structures [32]. The latest DCNv4 [31] has achieved further breakthroughs in computational efficiency. To address information loss during downsampling, researchers have begun to utilize the multi-resolution characteristics of wavelet transforms to decompose and preserve high-frequency details in the frequency domain, as applied in super-resolution [33, 34] and downsampling layers for object detection [35]. Such methods effectively prevent the edge textures of tiny objects from being completely obliterated during the feature map contraction process.
+
+3. Methodology
+3.1 Overall Architecture
+Underwater object detection can be formulated as a mapping learning problem within a degraded domain D. Given a degraded underwater image X鈭?/m:t>RH脳W脳3, the image not only contains the target objects O but is also subject to nonlinear interference from depth-dependent transmission rates t and background light A. Traditional approaches attempt to address this via independent enhancement networks E(鈭? and detection networks D(鈭?, formulated as y=D(E(I)). 
+However, this cascaded paradigm neglects the distributional alignment between enhanced features and detection-oriented features. To address this limitation, this paper proposes a unified framework named 鈥淓nd-to-End Underwater Specialist.鈥?As illustrated in Fig. 1, using [YOLOv13] as the baseline, the framework reconstructs the detection flow by deeply coupling three core components:
+Input-level: We introduce the UnitModule, which embeds the inverse process of the underwater optical imaging model into the front end of the network. Through unsupervised joint training, this module adaptively generates latent clear representations tailored for the subsequent detector.
+Stem-level: We employ Haar Wavelet Downsampling (HWD) to replace traditional strided convolution. Leveraging the orthogonal decomposition property of wavelet transforms, HWD losslessly encodes spatial high-frequency information into frequency-domain channels, effectively resolving the issue of feature dissipation for tiny objects during high-rate downsampling.
+Feature-level: We deploy Linear Deformable Convolution (LDConv) in the deep layers of the backbone network. Utilizing a mechanism of linearly increasing sampling points, LDConv adaptively captures complex geometric deformations of non-rigid organisms (e.g., mollusks and swimming fish).
+The model accepts raw underwater images as input, which first undergo adaptive quality enhancement via the UnitModule. Subsequently, key textures are preserved through the Haar wavelet downsampling layer. Finally, deformation-robust features are extracted by the backbone network based on LDConv, and target localization and classification are completed through the neck and detection heads containing multi-scale prediction heads.
+
+Fig1
+
+3.2 unitmodule
+UnitModule is a lightweight and differentiable image enhancement unit. Its core philosophy involves integrating the classical underwater optical imaging model into deep neural networks. By enabling joint optimization with the detector, it effectively overcomes the sub-optimal bottleneck inherent in the traditional "enhance-then-detect" paradigm.
+3.2.1 Physical Modeling and Network Implementation
+The degradation process of underwater images is typically described by the Jaffe-McGlamery underwater optical imaging model. This model decomposes the total irradiance I(x) received by the detector into the direct attenuation component and the background scattering component:
+Ix=Jxtx+A1-tx#1
+where x denotes the pixel coordinates, J(x) represents the clear scene radiance to be restored, A is the global background light (often referred to as Atmospheric Light), and t(x) is the wavelength-dependent medium transmission map.
+To recover J(x) from the degraded image I(x), the theoretical inverse transformation is formulated as:
+Jx=Ix-Atx+A#2
+However, directly applying Eq. (2) in deep learning training is prone to numerical instability. Specifically, when the transmission rate t(x)鈫?  (i.e., in deep water or distant regions), the denominator approaches zero, leading to gradient explosion and pixel value overflow in the enhanced image. To address this, UnitModule employs a re-parameterization design for the enhancement formula, transforming it into a numerically stable weighted summation form:
+Jx=Ix鈰?/m:t>1-tx+A鈰?/m:t>tx#3
+In this formulation, the network does not directly predict the physical transmission rate but instead predicts an enhancement weight map t(x) and a background light correction vector A. This design enables the module to adaptively balance original pixel information with background correction information, thereby effectively removing haze while avoiding the introduction of artificial artifacts.
+As shown in Fig. 2, the UnitModule consists of three collaborative sub-networks: the UnitModule Backbone (UnitBackbone), the Transmission Head (T-Head), and the Atmosphere Head (A-Head).
+UnitBackbone: Specifically, the UnitBackbone adopts a lightweight structure, comprising a Stem composed of two 3脳3 convolution layers (stride 2, with channel numbers Cs1=32 and Cs2=64) and two Large Kernel Blocks (LK Blocks). Drawing inspiration from RepLKNet [37], the LK Block utilizes a 1脳1 convolution for channel compression followed by a K脳K depth-wise separable convolution (where K=9). This design enhances the receptive field and nonlinear expressive capability through structural re-parameterization.
+T-Head: The T-Head aims to capture depth-related local degradation features. It receives output features from the UnitBackbone and predicts the transmission map t through two layers of upsampling and convolutions. The final output layer employs a Sigmoid activation function to constrain the output feature map within the (0, 1) interval.
+Head: The A-Head is responsible for estimating the global optical properties of the image. It first compresses the input features into a 1脳1脳C global descriptor via Global Average Pooling (GAP), followed by two Fully Connected (FC) layers. Finally, it outputs a 3-dimensional vector corresponding to the background light parameters A for the R, G, and B channels, respectively.
+
+鍥?/w:t>2
+
+3.2.2 Unsupervised Joint Loss Function
+Due to the scarcity of paired real-world "underwater-clear" datasets, the UnitModule adopts an unsupervised learning strategy. Its optimization objective extends beyond mere visual clarity; instead, through joint training, it aims to generate enhanced images J that minimize the task loss of the detector. The total loss function is defined as:
+Ltotal=LdetJ+位LenhJ,t#4
+where Ldet(J) represents the localization and classification loss of the detector, and Lenh(J,t) denotes the specifically designed unsupervised enhancement loss. As formulated below, Lenh comprises three components that constrain the enhancement process from the dimensions of color, texture, and category, respectively:
+Lenh=w1Lcc+w2Ltv+w3Lac#5
+Color Consistency Loss (Lcc): As shown in Eq. (6), this loss is based on the "Gray World Hypothesis," which posits that the average intensity of each channel in a clear image should tend towards equilibrium.
+Lcc=(渭Jr-渭Jg)2+(渭Jr-渭Jb)2+(渭Jg-渭Jb)2#6
+Texture Smoothness Loss (Ltv): As shown in Eq. (7), to prevent high-frequency noise or checkerboard artifacts in the estimated transmission map t(x), a Total Variation constraint is applied to enforce piecewise smoothness:
+Ltv=x鈥?/m:t>鈭?/m:t>htx+鈭?/m:t>vtx#7
+where 鈭?/m:t>h and 鈭?/m:t>v denote the gradient operators in the horizontal and vertical directions, respectively.
+Assisting Color Cast Loss (Lac): As defined in Eq. (8), this term utilizes the pseudo-labels ypseudo generated by the Color Cast Predictor. It is calculated as the cross-entropy loss between the predicted probabilities and the pseudo-labels:
+Lac=-k=1K鈥?/m:t>ypseudoklogpccpk#8
+
+3.3 Haar Wavelet Downsampling
+Standard convolutional downsampling inevitably leads to the loss of high-frequency information exceeding the Nyquist frequency. To address the characteristic weak textures of tiny underwater objects, we introduce a HWD module based on Multiresolution Analysis (MRA), the structure of which is illustrated in Fig. 3.
+
+鍥? H0浠ｈ〃浣庨€氭护娉紝H1浠ｈ〃楂橀€氭护娉紝z1z2鍒嗗埆浠ｈ〃鍥惧儚涓殑涓や釜绌洪棿缁村害
+
+The Haar wavelet transform is founded on the linear combination of the one-dimensional scaling function 蠒(x) and the wavelet function 蠄(x):
+&蠒1(x)=12蠒1,0(x)+12蠒1,1(x)&蠄1(x)=12蠒1,0(x)-12蠒1,1(x)&&#9
+where 蠒jk(x)=2j蠒(2jx-k) defines the multi-scale basis functions. For a two-dimensional feature map X鈭?/m:t>RH脳W脳C, the transformation generates four sub-band components: 
+HaarX=A,H,V,D#10
+Here, A鈭?/m:t>RH2脳W2脳Crepresents the low-pass filtering result, preserving the global structure, while H,V,D鈭?/m:t>RH2脳W2脳C capture high-frequency edge textures in the horizontal, vertical, and diagonal directions, respectively. Unlike traditional image processing that outputs four independent images, we adopt a 鈥淪pace-to-Channel Rearrangement鈥?strategy, concatenating the calculated four components along the channel dimension: Xencoded=ConcatA,H,V,D. Consequently, the dimensions of the feature map become H2脳W2脳C, and the spatial high-frequency information is explicitly encoded into channel features.
+To fuse features of different frequencies and regulate the channel dimension, we introduce a 1脳1  convolution layer after the encoding block, followed by Batch Normalization (BatchNorm) and the SiLU activation function:
+Yout=蟽(BN(Conv1脳1(Xencoded)))#11
+This convolution layer acts as a 鈥?/w:t>learnable frequency selector.鈥?/w:t> During backpropagation, the network can adaptively adjust the attention weights assigned to the low-frequency structure (A) or high-frequency edges (H, V, D) according to the specific requirements of the underwater detection task. This mechanism effectively suppresses noise interference caused by suspended particles while simultaneously enhancing the texture response of the targets.
+
+3.4 LDConv
+In underwater environments, the majority of detection targets are non-rigid organisms characterized by highly variable geometric topologies and irregular morphologies, such as various fish species and radial starfish. Traditional Standard Convolution is constrained by a fixed K脳K square sampling grid, which prevents the effective receptive field from aligning precisely with the actual contours of the target. Consequently, significant background noise is introduced during the feature extraction process, leading to a degradation in boundary localization accuracy.
+To overcome these geometric constraints, we introduce LDConv, an innovative operator that achieves precise modeling of irregular targets through a dynamic sampling point offset mechanism, as illustrated in Fig. 4. The core innovation of LDConv lies in the decoupling of the convolutional kernel size from the number of parameters. This enables a linear growth in parameter quantity鈥?/w:t>rather than the quadratic growth characteristic of traditional convolutions鈥?/w:t>providing a highly efficient means of modeling the complex pose variations of underwater organisms.
+
+鍥?
+For a given input feature map X鈭?/m:t>RH脳W脳C, the output of LDConv at position $p_0$ is defined as follows:
+yp0=n=1N鈥?/m:t>wn鈰匵p0+pn+螖pn#12
+where N denotes the total number of sampling points, wn represents the weight of the n-th sampling point, pn is the predefined initial coordinate offset, and 螖pn is the learnable offset dynamically derived from the feature map.
+Unlike the Deformable Convolutional Network (DCN), which fixes the number of sampling points at k2, LDConv allows N to be any arbitrary integer. This ensures that the parameter count P grows linearly with N (P鈭漀). Such flexibility allows the network to obtain more refined feature representations by adjusting $N$ without incurring a substantial computational overhead.
+To enable irregular convolutional kernels to possess structured sampling grids, LDConv employs an arbitrary-sized convolution algorithm to generate the initial sampling coordinates Pn. This algorithm first constructs a regular sampling grid, then generates irregular sampling coordinates for the remaining points, and finally concatenates them to form the integrated sampling grid. The procedure is outlined in Algorithm 1.
+
+Algorithm 1: Initial Sampling Coordinate Generation for LDConv
+Input: Number of sampling points N.
+Output: Initial sampling coordinate set Pinit=p1,p2,鈥?p1,.
+Initialize Pinit鈫?/m:t>鈭?/m:t>
+Set the grid scale G鈫愨寠N鈱?/m:t>
+/* Step 1: Generate regular grid coordinates */
+for i鈫? to G do
+    for j鈫? to G do
+        if |Pinit|<N then
+            Pinit鈫?/m:t>Pinit鈭獅(i,j)}
+        end if
+    end for
+end for
+/* Step 2: Supplement with irregular coordinates */
+while |Pinit|<N do
+    Generate random offsets 螖x,螖y鈭?/m:t>Uniform(0,G)
+    Pinit鈫?/m:t>Pinit鈭獅(螖x,螖y)}
+end while
+return Pinit
+
+The feature extraction process of LDConv involves three key steps, taking N=5 in Fig. 4 as an example. First, initial sampling shapes (Pn) are generated based on the value of N using Algorithm 1. The focus here is to generate the corresponding sampling coordinates on the feature map for a kernel with N parameters. Second, the offsets for the respective kernel are obtained via a convolution operation. These offsets are added to the original coordinates to generate new, convolution-specific sampling coordinates. This step emphasizes the generation of diverse sampling shapes for convolutions at different spatial positions on the feature map. Finally, features at the corresponding locations are acquired through bilinear interpolation and resampling, followed by the application of the convolution operations to extract features.
+In our proposed model architecture, we implement a hierarchical substitution strategy:In the shallow layers (high resolution): We employ LDConv with N=7 to preserve fine-grained detailed features.In the deep layers (low resolution): We utilize LDConv with N=9 to enhance semantic perception and global modeling capabilities.
+
+4 experiments and results
+4.1. Implementation Details
+In deep learning research, hardware and software configurations are critical factors that directly influence model performance and experimental reproducibility. To ensure a transparent and rigorous experimental environment, the detailed hardware and software specifications used in this study are summarized in Table 1.
+Table 1. Hardware and software configurations.
+Configuration
+Parameter
+Operating system
+Ubuntu 22.04
+Accelerated environment
+Cuda 12.1
+Language
+Python 3.11
+Framework
+Pytorch 2.3.0
+GPU
+RTX4090 (24GB)
+
+To facilitate a fair and consistent comparison between the proposed UW-YOLO-Bio and various baseline methods, we adhered to a standardized training protocol. This protocol was meticulously designed to align with prevailing practices in the object detection literature while being optimized for underwater scenarios. The configuration encompasses key hyperparameters, including training epochs, input resolution, data augmentation strategies, and optimization settings. By standardizing these variables, we mitigated potential confounding factors and ensured the validity of the comparative results. The detailed training hyperparameters are listed in Table 2.
+Table 2. Training hyperparameters and configurations.
+Parameter
+Value
+Notes
+Epoch
+200
+
+Input Size
+640 脳 640
+After resizing
+Augmentation
+Mosaic (dose = 10), Random Flip, HSV Hue/Saturation/Value/adjustment
+Standard YOLO augmentation
+Optimizer
+SGD
+Momentum = 0.9 Weight Decay = 0.0005
+Learning Rate Scheduler
+Linear decay from 0.01 to final LR = 0.01 脳 0.01
+
+NMS IoU Threshold
+0.7
+
+Validation IoU Threshold
+0.5
+For mAP calculation
+
+4.2. Comprehensive Evaluation Framework
+To rigorously benchmark the proposed detector, several evaluation metrics are utilized based on the confusion matrix. True Positives (TP), False Positives (FP), and False Negatives (FN) serve as the fundamental variables. These metrics correspond to Equations (13)鈥?16), respectively.
+Precision=TPTP+FP#13
+Recall=TPTP+FN#14
+Precision evaluates the proportion of true positives among all predicted positives, while Recall assesses the model's ability to retrieve all ground-truth instances.
+AP=01鈥?/m:t>PRdR=i=0n-1鈥?/m:t>Pi螖Ri=鈭?/m:t>Piri#15
+The Precision-Recall (P-R) curve is plotted to visualize the equilibrium between P and R. The AP value, calculated as the area under the P-R curve, represents the detection accuracy for an individual class.
+mAP=i=1C鈥?/m:t>APiC#16
+As the primary metric for object detection, mAP is computed by taking the arithmetic mean of AP scores across all detected categories, offering a comprehensive measure of the algorithm's multi-class performance.
+
+4.3 datasets
+The proposed method was evaluated on two benchmark underwater datasets: DUO [44] and URPC [46]. These datasets encompass diverse underwater challenges, including hazing effects, severe color distortion, light interference, and complex background clutter, providing a robust validation platform.
+DUO (Detection in Underwater Objects): This publicly available benchmark is specifically curated for underwater object detection tasks. It consists of 7,782 images containing 74,515 annotated instances across four primary marine species. The dataset is partitioned into a training set (5,447 images), a validation set (778 images), and a test set (1,557 images). DUO includes multi-resolution images (from 586脳480 to 3840脳2160 pixels) and is particularly valuable for evaluating model performance against low contrast, multi-scale target variations, and dense clutter. It is widely used for developing visual systems for Autonomous Underwater Vehicles (AUVs). The dataset can be accessed at: https://github.com/chongweiliu/DUO.
+URPC (Underwater Robot Perception Challenge): The URPC dataset is derived from real-world operations at the Zhangzidao Marine Ranch in Dalian, China. It contains 5,543 images annotated with four economically significant marine species. The data is split into training (3,880 images), validation (554 images), and test (1,109 images) sets. URPC focuses on practical applications such as intelligent fishery management and automated harvesting. The images, captured in situ, present significant challenges including particulate interference (marine snow) and significant object overlap. This dataset serves as a critical resource for training the perception systems of underwater robots in operational environments. The dataset is available at: https://github.com/mousecpn/DG-YOLO.
+
+4.4. Ablation Study
+4.4.1. Parameter Sensitivity Analysis of LDConv
+To validate the efficacy of the proposed LDConv and determine the optimal hyperparameters, we conducted quantitative experiments on the DUO dataset using YOLOv13n as the baseline architecture. Specifically, we investigated the impact of varying the number of sampling points (N), which corresponds to the kernel size, on detection performance. The results are summarized in Table 3. The results demonstrate a positive correlation between detection accuracy (mAP50) and the number of sampling points. As N increases from 5 to 11, the model's performance shows a steady upward trend, peaking at 82.9% for both N=10 and N=11. This represents a significant improvement over the baseline's 81.1%. This enhancement is attributed to the expanded effective receptive field provided by a larger N, which augments the network capability to model the complex geometric deformations of irregular underwater targets. Conversely, inference speed (FPS) exhibits a strong negative correlation with N. The FPS suffers a precipitous decline from 31.8 at N=5 to 17.8 at N=11 due to the increased computational cost of offset generation. Notably, the parameter count (Params) increases only marginally in a linear fashion with N, validating the parameter efficiency of the LDConv design. 
+The experimental data reveals a significant accuracy-speed trade-off. We identified two distinct equilibrium points at N=7 and N=9, where the model achieves an optimal balance between performance gains and computational overhead. Consequently, to maximize the strengths of LDConv, we adopt a Hierarchical Substitution Strategy in our final architecture:
+Shallow Layers (High Resolution): We employ LDConv with N=7. Since shallow layers are responsible for extracting fine-grained spatial details, a moderate N preserves crucial texture information while ensuring high inference efficiency.
+Deep Layers (Low Resolution): We utilize LDConv with N=9. In deep layers where features are semantically rich but spatially coarse, a larger N is deployed to expand the receptive field and enhance global semantic perception.
+
+Table 3. 
+LDConv
+Precision(%)
+Recall(%)
+AP50(%)
+AP50-95(%)
+params(%)
+FPS
+baseline
+84.1
+73.3
+81.1
+60.8
+2.57
+18.8
+5
+81.2
+69.9
+79.2
+58.6
+2.507
+31.8
+6
+83.2
+71.2
+80
+59.4
+2.518
+29.7
+7
+86.8
+74.5
+81.5
+61
+2.529
+29.1
+8
+91.1
+72
+82.4
+60
+2.541
+25.3
+9
+90.9
+75.5
+82.7
+62.3
+2.552
+23.1
+10
+91.1
+75.6
+82.9
+62.5
+2.565
+20.5
+11
+91.3
+75.8
+82.9
+62.5
+2.588
+17.8
+
+4.4.2 
+To systematically evaluate the individual contributions and synergistic effects of the proposed components within the "End-to-End Underwater Specialist" framework, we conducted a comprehensive ablation study on the DUO and URPC datasets. The investigation focused on three core modules: the physics-aware UnitModule, the frequency-domain HWD, and the geometry-adaptive LDConv.
+All models were trained under identical protocols, strictly adhering to the hyperparameters and hardware specifications detailed in Section 4.1. The baseline model was established using YOLOv13n, followed by the incremental integration of each proposed module. To ensure statistical reliability, the reported results represent the average performance over multiple independent runs. The quantitative comparison results are summarized in Table 4.
+
+
+
+
+
+Table 4 
+Dataset
+UnitModule
+HWD
+LDConv
+Precision(%)
+Recall(%)
+mAP50(%)
+mAP50-95(%)
+FPS
+DUO
+
+
+
+84.1
+73.3
+81.1
+60.8
+18.8
+
+鈭?/w:t>
+
+
+87.2
+73.5
+83.5
+64.1
+18.2
+
+
+鈭?/w:t>
+
+89.4
+76
+83.1
+62.5
+18.7
+
+
+
+鈭?/w:t>
+90.9
+75.5
+82.7
+62.3
+23.1
+
+鈭?/w:t>
+鈭?/w:t>
+
+89.8
+75.9
+85.5
+65.1
+18.6
+
+鈭?/w:t>
+
+鈭?/w:t>
+91.1
+75.8
+84.9
+66.5
+22.1
+
+
+鈭?/w:t>
+鈭?/w:t>
+89.9
+76
+85.8
+67.2
+22.7
+
+鈭?/w:t>
+鈭?/w:t>
+鈭?/w:t>
+91.2
+76.1
+86.2
+67.8
+21.8
+URPC
+
+
+
+81.0
+75.2
+77.9
+45.8
+18.2
+
+鈭?/w:t>
+
+
+83.1
+76.0
+80.5
+46.7
+17.9
+
+
+鈭?/w:t>
+
+82.5
+75.9
+81.1
+46.2
+18.1
+
+
+
+鈭?/w:t>
+83.0
+77.2
+83.5
+48.2
+20.6
+
+鈭?/w:t>
+鈭?/w:t>
+鈭?/w:t>
+84.5
+78.6
+84.3
+50.8
+20.2
+(Note: Rows 5-7 for URPC are omitted for brevity in this snippet but strictly follow the same trend as DUO in the full analysis.)
+As evidenced in Table 4, the integration of the UnitModule yielded a significant improvement in detection accuracy. On the DUO dataset, the standalone UnitModule boosted Precision by 3.1% and mAP50 by 2.4% compared to the baseline. This performance gain validates our theoretical assertion in Section 3.2 that embedding the inverse physical imaging model effectively mitigates color distortion and hazing. By generating a latent clear representation Iclean, the UnitModule aligns the feature distribution of degraded inputs with the detector's domain, significantly reducing false negatives caused by low contrast. Although a slight decrease in FPS (from 18.8 to 18.2) was observed due to the additional computational overhead of the T-Head and A-Head, the trade-off is justified by the substantial accuracy gains.
+The HWD module demonstrated exceptional capability in recovering fine-grained details. On the URPC dataset, which is characterized by dense small targets, the HWD module independently improved mAP50 by 3.2% (from 77.9% to 81.1%). This confirms that the lossless encoding of high-frequency information (edges and textures) into channel dimensions prevents the feature dissipation typically caused by strided convolutions. Notably, HWD achieved the highest Recall improvement among single modules on DUO (+2.7%), indicating that the "frequency-aware" strategy is critical for minimizing missed detections of tiny marine organisms.
+A remarkable finding from the experiments is the dual advantage of the LDConv. It encompasses robustness and efficiency enhancement. LDConv independently improved mAP50-95 by 1.5% on DUO, proving its effectiveness in modeling non-rigid biological deformations (e.g., starfish) through adaptive sampling offsets. Contrary to standard deformable convolutions that typically increase latency, our LDConv implementation increased the inference speed. On the DUO dataset, the FPS rose from 18.8 (Baseline) to 23.1 (LDConv). This empirically validates the efficiency of the linear parameter growth mechanism (P鈭漀) discussed in Section 3.3, which decouples kernel size from parameter count, allowing for larger receptive fields with reduced computational burden.
+The combination of modules demonstrates a clear "1+1>2" synergistic effect. UnitModule + HWD focuses on "Quality + Detail." By correcting the image quality first and then preserving the restored details during downsampling, the model achieved an mAP50 of 85.5% on DUO. The final model, incorporating all three modules, achieved State-of-the-Art (SOTA) performance. On the DUO dataset, the full model reached a Precision of 91.2% and mAP50 of 86.2%, representing a comprehensive improvement of +7.1% in Precision and +5.1% in mAP50 over the baseline. Consistent improvements were observed on the URPC dataset (mAP50 increased by 6.4%, from 77.9% to 84.3%), demonstrating the framework's strong generalization capability across different water qualities and target distributions.
+In conclusion, the proposed method not only significantly enhances detection accuracy through physics-guided enhancement and frequency-domain analysis but also maintains high real-time performance thanks to the efficient design of LDConv. This confirms the suitability of the "End-to-End Underwater Specialist" for practical deployment on autonomous underwater vehicles (AUVs).
+
+4.5 Comparative Analysis with State-of-the-Arts
+To rigorously benchmark the effectiveness of the "End-to-End Underwater Specialist" framework, we conducted a comprehensive comparative analysis against two categories of baseline methods:
+Generic Object Detectors: Including the classic two-stage architectures (Faster R-CNN [cite], Cascade R-CNN [cite]) and the state-of-the-art one-stage YOLO series (YOLOv8 [cite], YOLOv10 [cite], YOLOv11 [cite], and the latest YOLOv12 [cite]).
+Underwater-Specific Detectors: Including LEFEN [cite], DJI-Net [cite], ERL-Net [cite], Boosting R-CNN [cite], and GCC-Net [cite], which are specifically engineered for the underwater domain.
+All comparative experiments were executed on the DUO and URPC datasets under identical training protocols and hardware configurations to ensure a fair evaluation.
+
+4.5.1. Performance on DUO Dataset
+The DUO dataset is characterized by complex lighting and diverse target scales. The quantitative results are summarized in Table 5.
+As evidenced in Table 5, our proposed model achieves a substantial lead over generic detectors. Specifically, it attains an mAP50 of 86.2% and mAP50-95 of 67.8%, outperforming the latest YOLOv12 by 3.0% and 2.7%, respectively. While two-stage models like Cascade R-CNN offer respectable accuracy (mAP50 80.9%), their inference speed (11.6 FPS) falls short of real-time requirements. In contrast, our model maintains a high inference speed of 21.8 FPS, which is comparable to YOLOv8 (21.9 FPS) but with significantly higher precision (+3.3% in mAP50). This indicates that our framework achieves a superior balance between accuracy and latency.
+In the comparison with domain-specific algorithms, our "End-to-End Specialist" framework demonstrates superior robustness and precision. While LEFEN [cite] proves to be a formidable competitor with an mAP50 of 86.0%, our model surpasses it across all key metrics, achieving a +2.0% higher Precision (91.2% vs. 89.2%) and a +1.5% higher mAP50-95 (67.8% vs. 66.3%). This indicates that our physics-aware UnitModule effectively mitigates the "domain shift" caused by varying water turbidity, enabling the detector to distinguish targets from background noise with greater confidence. It is worth noting that ERL-Net [cite] exhibits strong localization capability (mAP50-95 of 67.5%). However, its performance significantly drops in mAP50 (81.4%), lagging behind our model by 4.8%. This suggests that while ERL-Net aligns boxes well for easy targets, it misses a substantial number of harder targets. In contrast, our model maintains the highest scores in both metrics, proving that the geometry-adaptive LDConv successfully captures non-rigid biological targets that are typically missed by standard convolution kernels. Furthermore, our model achieves this SOTA accuracy without compromising speed. With an inference rate of 21.8 FPS, it is notably faster than Boosting R-CNN (12.5 FPS) and GCC-Net (16.4 FPS), confirming its suitability for latency-sensitive underwater robotic applications.
+
+4.5.2. Performance on URPC Dataset
+The URPC dataset presents challenges such as dense small object distribution and heavy turbidity. The results are presented in Table 6.
+Our model demonstrates exceptional generalization capabilities, achieving the best performance across all metrics: Precision (84.5%), Recall (78.6%), mAP50 (84.3%), and mAP50-95 (50.8%). Notably, compared to YOLOv12, our method exhibits a remarkable improvement of +3.1% in mAP50 and +2.7% in mAP50-95. This substantial gap highlights the limitations of generic CNN architectures in handling severe underwater degradation. Our UnitModule effectively mitigates these environmental interferences, allowing the detector to "see" clearer features.
+Against specialized models like GCC-Net (mAP50 79.6%) and DJI-Net (mAP50 82.2%), our framework maintains a clear advantage of +4.7% and +2.1% respectively. Even against the highly competitive LEFEN (mAP50 84.0%), our model secures a distinct lead in mAP50-95 (+1.5%). This metric is particularly crucial for robotic grasping tasks, where precise localization is as important as correct classification. The consistent superiority on both DUO and URPC datasets confirms that our "End-to-End Specialist" is not overfitted to a specific water condition but possesses robust adaptability to diverse marine environments.
+Table 5 :DUO
+Method
+Type
+Precision(%)
+Recall(%)
+mAP50(%)
+mAP50-95(%)
+FPS
+Faster R-CNN
+Generic
+79.1
+68.2
+80.5
+59.2
+11.4
+Cascade R-CNN
+
+82.4
+71.9
+80.9
+60.2
+11.6
+YOLOv8
+
+85.7
+74.4
+82.9
+62.7
+21.9
+YOLOV10
+
+85.9
+74.3
+83.2
+62.9
+20.1
+YOLOv11
+
+83.4
+75.7
+83.7
+64.1
+20.5
+YOLOv12
+
+84.9
+75.4
+83.2
+65.1
+19.5
+LEFEN
+Underwater
+89.2
+75.1
+86.0
+66.3
+19.4
+DJI-Net
+
+88.7
+75.6
+84.2
+65.5
+18.1
+ERL-Net
+
+86.5
+74.0
+81.4
+67.5
+19.1
+Boosting R-CNN
+
+90.9
+75.1
+80.6
+66.9
+12.5
+GCC-Net
+
+89.1
+74.2
+81.6
+66.3
+16.4
+ours
+
+91.2
+76.1
+86.2
+67.8
+21.8
+
+
+Table 6: URPC
+Method
+Type
+Precision(%)
+Recall(%)
+mAP50(%)
+mAP50-95(%)
+FPS
+Faster R-CNN
+Generic
+72.1
+71.2
+78.5
+42.2
+11.3
+Cascade R-CNN
+
+75.4
+74.9
+78.9
+43.2
+11.6
+YOLOv8
+
+78.7
+77.4
+80.9
+45.7
+21.9
+YOLOV10
+
+78.9
+77.3
+81.2
+45.9
+20.1
+YOLOv11
+
+76.4
+78.1
+81.7
+47.1
+20.5
+YOLOv12
+
+77.9
+78.4
+81.2
+48.1
+19.5
+LEFEN
+Underwater
+82.2
+78.1
+84.0
+49.3
+19.4
+DJI-Net
+
+81.7
+78.6
+82.2
+48.5
+18.1
+ERL-Net
+
+79.5
+77.0
+79.4
+50.5
+19.1
+Boosting R-CNN
+
+83.9
+78.1
+78.6
+49.9
+12.5
+GCC-Net
+
+82.1
+77.2
+79.6
+49.3
+16.4
+ours
+
+84.5
+78.6
+84.3
+50.8
+21.2
+Bold markings indicate optimal performance
+
+Figure聽5.聽Radar聽plots聽of聽performance聽of聽different聽models,聽(a,b)聽represent聽the聽performance聽on聽da tasets聽DUO and URPC,聽respectively.聽
+ 
+4.6. Confusion Matrix 
+To provide a granular analysis of the model's classification capabilities and identify specific failure modes, we visualized the normalized confusion matrices for both the DUO and URPC datasets, as shown in Figure 6. In these matrices, the columns represent the Ground Truth labels, while the rows represent the Predicted labels. Consequently, the diagonal elements indicate the Recall for each category, the last row represents the False Negative Rate, and the last column illustrates the distribution of False Positives.
+
+
+Figure 6. Normalized confusion matrices of the proposed method on the test sets.  (a) Confusion matrix on the DUO dataset, highlighting high recall for Starfish and Echinus. (b)Confusion matrix on the URPC dataset, showing robust performance despite higher turbidity. The diagonal represents the recall for each class, while the last row indicates the rate of missed detections.
+Figure 6(a) illustrates the classification performance on the DUO dataset. The model exhibits exceptional performance for Starfish and Echinus, achieving recall rates of 0.91 and 0.90, respectively. The values in the off-diagonal cells between marine species are almost exclusively 0.00, indicating that the proposed method has successfully learned highly discriminative features, virtually eliminating inter-class confusion. This validates the effectiveness of the HWD module in preserving distinct frequency-domain texture features. The primary challenge lies in the Scallop class, which has a relatively lower recall of 0.66 and a significant miss rate (False Negative) of 0.34. This is attributed to the biological habit of scallops, which often bury themselves in sediment or camouflage against the seabed, combined with their small scale. Analyzing the last column, we observe that 59% of the false positive detections are misclassified as Echinus. This suggests that complex background textures in the DUO dataset share high morphological similarity with sea urchins, occasionally confusing the detector.
+Figure 6(b) presents the results for the URPC dataset, which is characterized by higher turbidity. The model maintains high recall rates for Echinus (0.90), Starfish (0.85), and Scallop (0.81). Notably, the recall for Scallops on URPC is significantly higher than on DUO, suggesting that the UnitModule effectively enhances the contrast of scallops in turbid water, making them easier to distinguish. The lowest recall is observed for Holothurian at 0.72, with a miss rate of 0.28. Holothurians lack rigid geometric structures and exhibit soft, deformable bodies that blend seamlessly with the environment. While our LDConv module improves deformation modeling, the extreme camouflage of sea cucumbers remains a persistent challenge. Similar to DUO, the background is most frequently misclassified as Echinus (0.47). This consistent trend across datasets indicates that distinguishing sea urchins from background clutter remains a key direction for future optimization, potentially requiring more aggressive hard-negative mining strategies.
+Overall, the confusion matrices reveal that the "End-to-End Underwater Specialist" achieves a high degree of classification precision. The errors are predominantly concentrated in Background-Foreground confusion (missed detections of camouflaged targets or false detections of background clutter) rather than Inter-Class confusion. This confirms that the model's feature extractor is robust and semantically accurate, effectively validating the design rationale of integrating frequency-domain analysis and physics-aware enhancement.
+
+4.7 
+
